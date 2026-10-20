@@ -4,76 +4,125 @@
 #include <pthread.h>
 #include <time.h>
 
-#define nThreads 16
+#define NTHREADS 32
+#define SIDELENGTH 2000
+#define MATRIXSIZE ((SIDELENGTH) * (SIDELENGTH))
 #define FOR(i, size) for(size_t i = 0; i < size; i++)
-typedef struct matrix Matrix;
+#define INDEX(i, j) ((i) * (SIDELENGTH) + (j))
+#define MIN(a, b) ((a) < (b)? (a) : (b))
 
-Matrix *resultMatrix = NULL;
+typedef struct matrix Matrix;
+typedef struct parametros Parametros;
+
+Matrix m1;
+Matrix m2;
+Matrix m3; //m1 * m2
 
 struct matrix{
 	int id;
-	size_t size;
 	float *matrix;
 };
 
-typedef struct parametros{
-	Matrix m1;
-	Matrix m2;
-	size_t step;
-	size_t idxLine;
-} Parametros;
+struct parametros{
+	size_t fromRow;
+	size_t toRow;
+};
 
-void initMatrix(Matrix *m, int id, size_t size){
+void initMatrix(Matrix *m, int id){
 	m->id = id;
-	m->size = size;
 
-	m->matrix = (float *)malloc(sizeof(float) * size * size);
+	m->matrix = (float *)malloc(sizeof(float) * MATRIXSIZE);
 	if(m->matrix == NULL){
 		perror("Error de asignación de memoria\n");
 		exit(1);
 	}
 
-	FOR(i, size)
-		FOR(j, size)
-			m->matrix[i * size + j] = ((float)random() / (float)RAND_MAX) * 1000.0f;
+	FOR(i, SIDELENGTH)
+		FOR(j, SIDELENGTH)
+			m->matrix[INDEX(i, j)] = ((float)random() / (float)RAND_MAX) * 1000.0f;
 }
 
 void freeMatrix(Matrix *m) {
-    if (m != NULL && m->matrix != NULL) {
-        free(m->matrix);
-        m->matrix = NULL;
-    }
+	if (m != NULL && m->matrix != NULL) {
+		free(m->matrix);
+		m->matrix = NULL;
+	}
 }
 
-void initParametros(Parametros* p, size_t size){
-	initMatrix(&p->m1, 1, size);
-	initMatrix(&p->m2, 2, size);
-	p->step = (size_t)(1 + size / nThreads);
-	p->idxLine = 0;
-}
-
-void freeParametros(Parametros* p){
-	freeMatrix(&p->m1);
-	freeMatrix(&p->m2);
+void initParametros(Parametros* p, size_t fromRow, size_t step){
+	p->fromRow = MIN(fromRow, SIDELENGTH);
+	p->toRow = MIN(fromRow + step, SIDELENGTH);
 }
 
 void *multMatrixLine(void *arg){
 	Parametros *p;
 	p = (Parametros *) arg;
 
-	if(resultMatrix == NULL)
-		return NULL;
+	size_t idxRow = p->fromRow;
+	size_t limit = p->toRow;
 
-	Matrix *m1 = &p->m1;
-	Matrix *m2 = &p->m2;
-	size_t pos = p->i * resultMatrix->size + p->j;
-	size_t size = resultMatrix->size;
+	while(idxRow < limit){
+		FOR(idxColumn, SIDELENGTH){
+			float sum = 0.0f;
+			FOR(k, SIDELENGTH){
+				size_t m1Pos = INDEX(idxRow, k);
+				size_t m2Pos = INDEX(k, idxColumn);
 
-	FOR(k, size){
-		size_t m1Pos = p->i * size + k;
-		size_t m2Pos = k*size + p->j;
-		resultMatrix->matrix[pos] += m1->matrix[m1Pos] * m2->matrix[m2Pos];
+				sum += m1.matrix[m1Pos] * m2.matrix[m2Pos];
+			}
+			m3.matrix[INDEX(idxRow, idxColumn)] = sum;
+		}
+		idxRow++;
+	}
+	if(p->fromRow < p->toRow)
+		printf("Calculado desde %zu hasta %zu.\n", p->fromRow, p->toRow - 1);
+	return NULL;
+}
+
+int main(void){
+	srandom((unsigned int)time(NULL));
+	struct timespec start, finish;
+	double elapsed;
+
+	initMatrix(&m1, 1);
+	initMatrix(&m2, 2);
+	
+	m3.id = 3;
+	m3.matrix = (float *)malloc(sizeof(float) * MATRIXSIZE);
+	if(m3.matrix == NULL){
+		perror("Error de asignación de memoria\n");
+		exit(1);
 	}
 
-	return NULL;
+	Parametros params[NTHREADS];
+	pthread_t hilos[NTHREADS];
+
+	size_t rows = 0;
+	size_t step = (SIDELENGTH + NTHREADS - 1) / (NTHREADS);
+	FOR(i, NTHREADS){
+		initParametros(&params[i], rows, step);
+		rows += step;
+	}
+
+
+	printf("Iniciando multiplicación (%dx%d) par (%d) hilos...\n", SIDELENGTH, SIDELENGTH, NTHREADS);
+
+	clock_gettime(CLOCK_MONOTONIC, &start);
+	
+	FOR(i, NTHREADS)
+		pthread_create(&hilos[i], NULL, multMatrixLine, (void *)&params[i]);
+
+	FOR(i, NTHREADS)
+		pthread_join(hilos[i], NULL);
+
+	clock_gettime(CLOCK_MONOTONIC, &finish);
+
+	elapsed = (finish.tv_sec - start.tv_sec);
+	elapsed += (finish.tv_nsec - start.tv_nsec) / 1000000000.0;
+
+	printf("Tiempo de ejecución: %.6f segundos\n", elapsed);
+	freeMatrix(&m1);
+	freeMatrix(&m2);
+	freeMatrix(&m3);
+	return 0;
 }
